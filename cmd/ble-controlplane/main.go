@@ -35,7 +35,7 @@ func newCommand() *cobra.Command {
 		},
 	}
 	flags := cmd.Flags()
-	flags.StringVar(&opts.DataDir, "data-dir", "_data", "Directory for local TLS credentials and kubeconfigs")
+	flags.StringVar(&opts.DataDir, "data-dir", "_data", "Directory for local TLS credentials and the kubectl kubeconfig")
 	flags.StringVar(&opts.Provider, "provider", "native", "Bluetooth scanner provider: native or replay")
 	flags.IntVar(&opts.SecurePort, "secure-port", 7443, "Local Kubernetes HTTPS port")
 	flags.IntVar(&opts.UIPort, "ui-port", 7080, "Local dashboard HTTP port")

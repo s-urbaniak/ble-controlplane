@@ -35,17 +35,12 @@ import (
 	"k8s.io/client-go/util/keyutil"
 )
 
-const (
-	ClientUser    = "ble-controlplane-client"
-	DashboardUser = "ble-controlplane-dashboard"
-)
+const ClientUser = "ble-controlplane-client"
 
 type Files struct {
 	CA, CAKey, ServerCert, ServerKey string
-	clients                          map[string]keyPair
+	clientCert, clientKey            string
 }
-
-type keyPair struct{ cert, key string }
 
 // Ensure preserves the CA on restart and renews API certificates for the host.
 // The caller must hold the data-directory lock.
@@ -56,10 +51,7 @@ func Ensure(dir string, hosts ...string) (Files, error) {
 	f := Files{
 		CA: filepath.Join(dir, "ca.crt"), CAKey: filepath.Join(dir, "ca.key"),
 		ServerCert: filepath.Join(dir, "server.crt"), ServerKey: filepath.Join(dir, "server.key"),
-		clients: map[string]keyPair{
-			ClientUser:    {filepath.Join(dir, "client.crt"), filepath.Join(dir, "client.key")},
-			DashboardUser: {filepath.Join(dir, "dashboard.crt"), filepath.Join(dir, "dashboard.key")},
-		},
+		clientCert: filepath.Join(dir, "client.crt"), clientKey: filepath.Join(dir, "client.key"),
 	}
 	if _, err := os.Stat(f.CA); os.IsNotExist(err) {
 		// Preserve the partial-CA guard: never silently replace an existing key.
@@ -109,8 +101,7 @@ func Ensure(dir string, hosts ...string) (Files, error) {
 		server          bool
 	}{
 		{f.ServerCert, f.ServerKey, "ble-controlplane", true},
-		{f.clients[ClientUser].cert, f.clients[ClientUser].key, ClientUser, false},
-		{f.clients[DashboardUser].cert, f.clients[DashboardUser].key, DashboardUser, false},
+		{f.clientCert, f.clientKey, ClientUser, false},
 	} {
 		key, keyPEM, err := newKey()
 		if err != nil {
@@ -207,27 +198,23 @@ func WritePrivate(path string, data []byte) error {
 	return os.Rename(f.Name(), path)
 }
 
-func (f Files) WriteKubeconfig(path, endpoint, namespace, user string) error {
+func (f Files) WriteKubeconfig(path, endpoint, namespace string) error {
 	ca, err := os.ReadFile(f.CA)
 	if err != nil {
 		return err
 	}
-	pair, ok := f.clients[user]
-	if !ok {
-		return fmt.Errorf("unknown kubeconfig identity %q", user)
-	}
-	cert, err := os.ReadFile(pair.cert)
+	cert, err := os.ReadFile(f.clientCert)
 	if err != nil {
 		return err
 	}
-	key, err := os.ReadFile(pair.key)
+	key, err := os.ReadFile(f.clientKey)
 	if err != nil {
 		return err
 	}
 	c := clientcmdapi.NewConfig()
 	c.Clusters["ble-controlplane"] = &clientcmdapi.Cluster{Server: endpoint, CertificateAuthorityData: ca}
-	c.AuthInfos[user] = &clientcmdapi.AuthInfo{ClientCertificateData: cert, ClientKeyData: key}
-	c.Contexts["ble-controlplane"] = &clientcmdapi.Context{Cluster: "ble-controlplane", AuthInfo: user, Namespace: namespace}
+	c.AuthInfos[ClientUser] = &clientcmdapi.AuthInfo{ClientCertificateData: cert, ClientKeyData: key}
+	c.Contexts["ble-controlplane"] = &clientcmdapi.Context{Cluster: "ble-controlplane", AuthInfo: ClientUser, Namespace: namespace}
 	c.CurrentContext = "ble-controlplane"
 	data, err := clientcmd.Write(*c)
 	if err != nil {

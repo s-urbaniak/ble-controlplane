@@ -15,22 +15,30 @@ import (
 	"io/fs"
 	"net"
 	"net/http"
+	"net/http/httputil"
+	"net/url"
 	"os"
 	"os/exec"
 	"sync"
 	"time"
 
 	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
+
+	api "example.com/ble-controlplane/pkg/apis/generic"
+	"example.com/ble-controlplane/pkg/apis/generic/v1alpha1"
 )
 
 //go:embed assets
 var files embed.FS
 
+var deviceListPath = "/apis/" + v1alpha1.GroupVersion.String() + "/namespaces/" + api.LocalNamespace + "/" + api.ResourceName
+
 type Dashboard struct {
 	worker   string
 	node     string
-	config   string
+	proxy    *httputil.ReverseProxy
 	address  string
 	provider string
 	mu       sync.Mutex
@@ -38,7 +46,7 @@ type Dashboard struct {
 	changed  chan struct{}
 }
 
-func New(worker, kubeconfig, address, provider string) (*Dashboard, error) {
+func New(loopback *rest.Config, worker, address, provider string) (*Dashboard, error) {
 	node, err := exec.LookPath("node")
 	if err != nil {
 		return nil, fmt.Errorf("locating Node.js for the dashboard: %w", err)
@@ -48,8 +56,25 @@ func New(worker, kubeconfig, address, provider string) (*Dashboard, error) {
 	} else if !info.Mode().IsRegular() {
 		return nil, fmt.Errorf("dashboard worker is not a regular file: %s", worker)
 	}
+	target, err := url.Parse(loopback.Host)
+	if err != nil {
+		return nil, fmt.Errorf("parsing the dashboard loopback endpoint: %w", err)
+	}
+	transport, err := rest.TransportFor(loopback)
+	if err != nil {
+		return nil, fmt.Errorf("creating the dashboard loopback transport: %w", err)
+	}
+	proxy := &httputil.ReverseProxy{
+		Transport:     transport,
+		FlushInterval: -1,
+		Rewrite: func(r *httputil.ProxyRequest) {
+			r.SetURL(target)
+			r.Out.URL.Path, r.Out.URL.RawPath = deviceListPath, ""
+			r.Out.Header = http.Header{"Accept": {"application/json"}}
+		},
+	}
 	return &Dashboard{
-		worker: worker, node: node, config: kubeconfig, address: address, provider: provider,
+		worker: worker, node: node, proxy: proxy, address: address, provider: provider,
 		latest: json.RawMessage(`{"state":"connecting","devices":[]}`), changed: make(chan struct{}),
 	}, nil
 }
@@ -60,6 +85,14 @@ func (d *Dashboard) Serve(ctx context.Context, listener net.Listener) error {
 		return err
 	}
 	mux := http.NewServeMux()
+	mux.HandleFunc(deviceListPath, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", http.MethodGet)
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		d.proxy.ServeHTTP(w, r)
+	})
 	mux.HandleFunc("GET /events", d.stream)
 	mux.Handle("GET /{$}", http.FileServerFS(assets))
 	mux.Handle("GET /app.js", http.FileServerFS(assets))
@@ -139,8 +172,8 @@ func (d *Dashboard) RunWorker(ctx context.Context) {
 func (d *Dashboard) readWorker(ctx context.Context) error {
 	workerCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	cmd := exec.CommandContext(workerCtx, d.node, d.worker)
-	cmd.Env = append(os.Environ(), "KUBECONFIG="+d.config, "BLE_PROVIDER="+d.provider)
+	cmd := exec.CommandContext(workerCtx, d.node, d.worker, "http://"+d.address)
+	cmd.Env = append(os.Environ(), "BLE_PROVIDER="+d.provider)
 	cmd.Stderr = os.Stderr
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {

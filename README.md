@@ -56,9 +56,10 @@ Sightings expire roughly three seconds after the last report from the platform.
   The scanner starts a new collection when it recovers from a failure. Pass the
   returned resource versions back unchanged and relist after HTTP 410.
 - The dashboard page, assets, and event stream are served inside the Go daemon.
-  A managed Node worker uses the [official Kubernetes TypeScript client] with
-  its own kubeconfig, scoped to list and watch `bledevices` in `local`.
-  The Go server relays the worker's snapshots to the browser.
+  A managed Node worker uses the [official Kubernetes TypeScript client] to
+  list and watch `bledevices` in `local` through the dashboard listener.
+  Go forwards those requests using the API server's in-memory loopback config
+  and relays the worker's snapshots to the browser.
 - The scanner and BLE types were extracted from [PizzaPlane]. The local project
   retains their Apache 2.0 notices.
 

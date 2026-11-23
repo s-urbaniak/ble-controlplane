@@ -6,6 +6,7 @@ import (
 	"context"
 	"strings"
 
+	"k8s.io/apiserver/pkg/authentication/user"
 	"k8s.io/apiserver/pkg/authorization/authorizer"
 
 	"example.com/ble-controlplane/internal/credentials"
@@ -18,25 +19,25 @@ func localAuthorizer() authorizer.Authorizer {
 		if identity == nil {
 			return authorizer.DecisionNoOpinion, "an authenticated identity is required", nil
 		}
-		user := identity.GetName()
+		name := identity.GetName()
 		if a.IsResourceRequest() && a.GetAPIGroup() == bleResource.Group && a.GetResource() == bleResource.Resource && a.GetSubresource() == "" {
-			switch user {
+			switch name {
 			case credentials.ClientUser:
 				if a.GetVerb() == "get" || a.GetVerb() == "list" || a.GetVerb() == "watch" {
 					return authorizer.DecisionAllow, "", nil
 				}
-			case credentials.DashboardUser:
+			case user.APIServerUser:
 				if a.GetNamespace() == api.LocalNamespace && (a.GetVerb() == "list" || a.GetVerb() == "watch") {
 					return authorizer.DecisionAllow, "", nil
 				}
 			}
 		}
-		if user == credentials.ClientUser && a.IsResourceRequest() &&
+		if name == credentials.ClientUser && a.IsResourceRequest() &&
 			a.GetAPIGroup() == namespaceResource.Group && a.GetResource() == namespaceResource.Resource && a.GetSubresource() == "" &&
 			(a.GetVerb() == "get" || a.GetVerb() == "list") {
 			return authorizer.DecisionAllow, "", nil
 		}
-		if user == credentials.ClientUser && !a.IsResourceRequest() && a.GetVerb() == "get" {
+		if name == credentials.ClientUser && !a.IsResourceRequest() && a.GetVerb() == "get" {
 			switch a.GetPath() {
 			case "/api", "/api/v1", "/api/v1/", "/apis", "/version", "/healthz", "/livez", "/readyz", "/openapi/v2", "/openapi/v3":
 				return authorizer.DecisionAllow, "", nil

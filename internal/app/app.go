@@ -63,18 +63,10 @@ func Run(ctx context.Context, opts Options) error {
 
 	endpoint := "https://" + apiListener.Addr().String()
 	kubeconfig := filepath.Join(dir, "kubeconfig")
-	dashboardConfig := filepath.Join(dir, "dashboard.kubeconfig")
-	if err := pki.WriteKubeconfig(kubeconfig, endpoint, api.LocalNamespace, credentials.ClientUser); err != nil {
-		return err
-	}
-	if err := pki.WriteKubeconfig(dashboardConfig, endpoint, api.LocalNamespace, credentials.DashboardUser); err != nil {
+	if err := pki.WriteKubeconfig(kubeconfig, endpoint, api.LocalNamespace); err != nil {
 		return err
 	}
 
-	ui, err := frontend.New(opts.WorkerFile, dashboardConfig, httpListener.Addr().String(), opts.Provider)
-	if err != nil {
-		return err
-	}
 	index := ble.NewIndex()
 	config, err := apiserver.NewConfig(apiListener, pki, index)
 	if err != nil {
@@ -84,7 +76,16 @@ func Run(ctx context.Context, opts Options) error {
 	if err != nil {
 		return err
 	}
-
+	running := false
+	defer func() {
+		if !running {
+			s.Destroy()
+		}
+	}()
+	ui, err := frontend.New(s.LoopbackClientConfig, opts.WorkerFile, httpListener.Addr().String(), opts.Provider)
+	if err != nil {
+		return err
+	}
 	ctx, cancel := context.WithCancelCause(ctx)
 	var workers wait.Group
 	defer func() {
@@ -112,7 +113,6 @@ func Run(ctx context.Context, opts Options) error {
 	}
 	provider := ble.SelectProvider(opts.Provider)
 	if err := start("start-ble-scanner", func(ctx context.Context) { ble.Run(ctx, index, provider) }); err != nil {
-		s.Destroy()
 		return err
 	}
 	if err := start("start-dashboard", func(ctx context.Context) {
@@ -121,14 +121,13 @@ func Run(ctx context.Context, opts Options) error {
 			cancel(fmt.Errorf("serving the dashboard: %w", err))
 		}
 	}); err != nil {
-		s.Destroy()
 		return err
 	}
 	if err := start("start-dashboard-client", ui.RunWorker); err != nil {
-		s.Destroy()
 		return err
 	}
 	prepared := s.PrepareRun()
+	running = true
 	runErr := prepared.RunWithContext(ctx)
 	if cause := context.Cause(ctx); cause != nil && !errors.Is(cause, context.Canceled) {
 		return errors.Join(runErr, cause)

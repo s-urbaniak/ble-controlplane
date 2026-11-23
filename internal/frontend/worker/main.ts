@@ -31,8 +31,11 @@ interface BLEDeviceList {
 type State = 'connecting' | 'live' | 'unavailable' | 'reconnecting';
 type WatchObject = BLEDevice & { code?: number; message?: string };
 
+const server = process.argv[2];
+if (!server) throw new Error('The dashboard proxy address is required');
 const config = new KubeConfig();
-config.loadFromDefault();
+// The worker calls the local HTTP listener, which handles TLS to the Kubernetes API.
+config.loadFromClusterAndUser({ name: 'dashboard', server, skipTLSVerify: true }, { name: 'dashboard' });
 const api = config.makeApiClient(CustomObjectsApi);
 const watch = new Watch(config);
 const devices = new Map<string, BLEDevice>();

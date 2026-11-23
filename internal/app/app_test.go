@@ -186,12 +186,7 @@ func TestReplayControlPlane(t *testing.T) {
 		}
 	})
 
-	t.Run("rejects writes and scopes the dashboard certificate", func(t *testing.T) {
-		dashboardConfig, err := clientcmd.BuildConfigFromFlags("", filepath.Join(dir, "dashboard.kubeconfig"))
-		if err != nil {
-			t.Fatal(err)
-		}
-
+	t.Run("requires read-only API credentials", func(t *testing.T) {
 		for _, tc := range []struct {
 			name, method, path string
 			config             *rest.Config
@@ -199,10 +194,6 @@ func TestReplayControlPlane(t *testing.T) {
 		}{
 			{"kubectl forbidden to create", http.MethodPost, resourcePath, config, http.StatusForbidden},
 			{"kubectl forbidden to create namespaces", http.MethodPost, "/api/v1/namespaces", config, http.StatusForbidden},
-			{"worker forbidden to list namespaces", http.MethodGet, "/api/v1/namespaces", dashboardConfig, http.StatusForbidden},
-			{"worker allowed to list local", http.MethodGet, resourcePath, dashboardConfig, http.StatusOK},
-			{"worker forbidden to get a single device", http.MethodGet, resourcePath + "/" + device.Name, dashboardConfig, http.StatusForbidden},
-			{"worker forbidden to list across namespaces", http.MethodGet, "/apis/" + gv + "/bledevices", dashboardConfig, http.StatusForbidden},
 			{"API requires credentials", http.MethodGet, resourcePath, rest.AnonymousClientConfig(config), http.StatusUnauthorized},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
@@ -215,6 +206,37 @@ func TestReplayControlPlane(t *testing.T) {
 					t.Fatal(err)
 				}
 				response, err := httpClient.Do(request)
+				if err != nil {
+					t.Fatal(err)
+				}
+				response.Body.Close()
+				if response.StatusCode != tc.code {
+					t.Errorf("HTTP status = %d, want %d", response.StatusCode, tc.code)
+				}
+			})
+		}
+	})
+
+	t.Run("scopes the dashboard loopback proxy", func(t *testing.T) {
+		for _, tc := range []struct {
+			name, method, path string
+			code               int
+		}{
+			{"lists local devices", http.MethodGet, resourcePath, http.StatusOK},
+			{"rejects writes", http.MethodPost, resourcePath, http.StatusMethodNotAllowed},
+			{"rejects head requests", http.MethodHead, resourcePath, http.StatusMethodNotAllowed},
+			{"does not expose namespaces", http.MethodGet, "/api/v1/namespaces", http.StatusNotFound},
+			{"does not expose individual devices", http.MethodGet, resourcePath + "/" + device.Name, http.StatusNotFound},
+			{"does not expose all namespaces", http.MethodGet, "/apis/" + gv + "/bledevices", http.StatusNotFound},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				request, err := http.NewRequestWithContext(ctx, tc.method, uiURL+tc.path, nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				request.Header.Set("Authorization", "Bearer invalid")
+				request.Header.Set("Impersonate-User", "dashboard-visitor")
+				response, err := http.DefaultClient.Do(request)
 				if err != nil {
 					t.Fatal(err)
 				}
