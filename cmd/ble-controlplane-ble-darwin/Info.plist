@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key>
+    <string>com.example.ble-controlplane.scanner</string>
+    <key>CFBundleName</key>
+    <string>BLE Control Plane Scanner</string>
+    <key>NSBluetoothAlwaysUsageDescription</key>
+    <string>BLE Control Plane scans for nearby Bluetooth Low Energy advertisers for its local discovery API.</string>
+</dict>
+</plist>
