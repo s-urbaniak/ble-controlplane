@@ -37,6 +37,11 @@ func localAuthorizer() authorizer.Authorizer {
 			(a.GetVerb() == "get" || a.GetVerb() == "list") {
 			return authorizer.DecisionAllow, "", nil
 		}
+		if name == credentials.ClientUser && a.IsResourceRequest() &&
+			a.GetAPIGroup() == selfReviewResource.Group && a.GetResource() == selfReviewResource.Resource &&
+			a.GetNamespace() == "" && a.GetSubresource() == "" && a.GetVerb() == "create" {
+			return authorizer.DecisionAllow, "", nil
+		}
 		if name == credentials.ClientUser && !a.IsResourceRequest() && a.GetVerb() == "get" {
 			switch a.GetPath() {
 			case "/api", "/api/v1", "/api/v1/", "/apis", "/version", "/healthz", "/livez", "/readyz", "/openapi/v2", "/openapi/v3":

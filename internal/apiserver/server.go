@@ -11,6 +11,7 @@ import (
 	serverstorage "k8s.io/apiserver/pkg/server/storage"
 
 	"example.com/ble-controlplane/internal/ble"
+	selfreviewstorage "example.com/ble-controlplane/pkg/registry/authorization/selfsubjectaccessreview/storage"
 	namespacestorage "example.com/ble-controlplane/pkg/registry/core/namespace/storage"
 	blestorage "example.com/ble-controlplane/pkg/registry/generic/bledevice/storage"
 )
@@ -29,6 +30,16 @@ func (c CompletedConfig) New() (*server.GenericAPIServer, error) {
 		if err := s.InstallLegacyAPIGroup(server.DefaultLegacyAPIPrefix, &core); err != nil {
 			s.Destroy()
 			return nil, fmt.Errorf("installing the core namespace API: %w", err)
+		}
+	}
+	if c.generic.MergedResourceConfig.ResourceEnabled(selfReviewResource) {
+		group := server.NewDefaultAPIGroupInfo(selfReviewResource.Group, scheme, metav1.ParameterCodec, codecs)
+		group.VersionedResourcesStorageMap[selfReviewResource.Version] = map[string]rest.Storage{
+			selfReviewResource.Resource: selfreviewstorage.NewREST(c.generic.Authorization.Authorizer),
+		}
+		if err := s.InstallAPIGroups(&group); err != nil {
+			s.Destroy()
+			return nil, fmt.Errorf("installing the authorization API group: %w", err)
 		}
 	}
 	provider := storageProvider{index: c.index}

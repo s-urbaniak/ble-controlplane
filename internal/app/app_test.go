@@ -17,11 +17,13 @@ import (
 	"testing"
 	"time"
 
+	authorizationv1 "k8s.io/api/authorization/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/apimachinery/pkg/watch"
+	authorizationclient "k8s.io/client-go/kubernetes/typed/authorization/v1"
 	coreclient "k8s.io/client-go/kubernetes/typed/core/v1"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -89,13 +91,20 @@ func TestReplayControlPlane(t *testing.T) {
 	}
 	gv := v1alpha1.GroupVersion.String()
 	resourcePath := "/apis/" + gv + "/namespaces/local/bledevices"
+	authorizationGV := authorizationv1.SchemeGroupVersion.String()
+	reviewPath := "/apis/" + authorizationGV + "/selfsubjectaccessreviews"
+	authorization, err := authorizationclient.NewForConfig(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reviews := authorization.SelfSubjectAccessReviews()
 
-	t.Run("discovers BLEDevices and the core namespace", func(t *testing.T) {
+	t.Run("discovers BLE devices, namespaces, and self access reviews", func(t *testing.T) {
 		_, resources, err := client.Discovery().ServerGroupsAndResources()
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(resources) != 2 {
+		if len(resources) != 3 {
 			t.Fatalf("unexpected discovery response: %+v", resources)
 		}
 		for _, group := range resources {
@@ -115,6 +124,11 @@ func TestReplayControlPlane(t *testing.T) {
 					!slices.Equal(resource.Verbs, metav1.Verbs{"get", "list"}) {
 					t.Fatalf("unexpected namespace resource metadata: %+v", resource)
 				}
+			case authorizationGV:
+				if resource.Name != "selfsubjectaccessreviews" || resource.Namespaced || resource.Kind != "SelfSubjectAccessReview" ||
+					!slices.Equal(resource.Verbs, metav1.Verbs{"create"}) {
+					t.Fatalf("unexpected self access review resource metadata: %+v", resource)
+				}
 			default:
 				t.Fatalf("unexpected API group: %s", group.GroupVersion)
 			}
@@ -131,6 +145,14 @@ func TestReplayControlPlane(t *testing.T) {
 		document, err := group.Schema("application/json")
 		if err != nil || !strings.Contains(string(document), "rssiDbm") {
 			t.Fatalf("OpenAPI is missing BLE device status: %v", err)
+		}
+		group = schema["apis/"+authorizationGV]
+		if group == nil {
+			t.Fatalf("OpenAPI is missing the authorization group: %+v", schema)
+		}
+		document, err = group.Schema("application/json")
+		if err != nil || !strings.Contains(string(document), reviewPath) || !strings.Contains(string(document), "io.k8s.api.authorization.v1.SelfSubjectAccessReview") {
+			t.Fatalf("OpenAPI is missing the self access review endpoint or definition: %v", err)
 		}
 	})
 
@@ -164,6 +186,92 @@ func TestReplayControlPlane(t *testing.T) {
 		}
 	})
 
+	t.Run("evaluates the caller's access reviews with the request policy", func(t *testing.T) {
+		for _, tc := range []struct {
+			name    string
+			spec    authorizationv1.SelfSubjectAccessReviewSpec
+			allowed bool
+		}{
+			{"list namespaces at cluster scope", authorizationv1.SelfSubjectAccessReviewSpec{
+				ResourceAttributes: &authorizationv1.ResourceAttributes{Version: "v1", Resource: "namespaces", Verb: "list"},
+			}, true},
+			{"list devices across namespaces", authorizationv1.SelfSubjectAccessReviewSpec{
+				ResourceAttributes: &authorizationv1.ResourceAttributes{Group: api.GroupName, Version: v1alpha1.GroupVersion.Version, Resource: api.ResourceName, Verb: "list"},
+			}, true},
+			{"watch local devices", authorizationv1.SelfSubjectAccessReviewSpec{
+				ResourceAttributes: &authorizationv1.ResourceAttributes{Group: api.GroupName, Version: v1alpha1.GroupVersion.Version, Resource: api.ResourceName, Namespace: api.LocalNamespace, Verb: "watch"},
+			}, true},
+			{"list devices with selectors", authorizationv1.SelfSubjectAccessReviewSpec{
+				ResourceAttributes: &authorizationv1.ResourceAttributes{
+					Group: api.GroupName, Resource: api.ResourceName, Namespace: api.LocalNamespace, Verb: "list",
+					FieldSelector: &authorizationv1.FieldSelectorAttributes{RawSelector: "metadata.name=demo"},
+					LabelSelector: &authorizationv1.LabelSelectorAttributes{Requirements: []metav1.LabelSelectorRequirement{
+						{Key: "demo", Operator: metav1.LabelSelectorOpExists},
+					}},
+				},
+			}, true},
+			{"create local devices", authorizationv1.SelfSubjectAccessReviewSpec{
+				ResourceAttributes: &authorizationv1.ResourceAttributes{Group: api.GroupName, Version: v1alpha1.GroupVersion.Version, Resource: api.ResourceName, Namespace: api.LocalNamespace, Verb: "create"},
+			}, false},
+			{"list pods", authorizationv1.SelfSubjectAccessReviewSpec{
+				ResourceAttributes: &authorizationv1.ResourceAttributes{Version: "v1", Resource: "pods", Namespace: api.LocalNamespace, Verb: "list"},
+			}, false},
+			{"get server version", authorizationv1.SelfSubjectAccessReviewSpec{
+				NonResourceAttributes: &authorizationv1.NonResourceAttributes{Verb: "get", Path: "/version"},
+			}, true},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				result, err := reviews.Create(ctx, &authorizationv1.SelfSubjectAccessReview{
+					Spec: tc.spec,
+					Status: authorizationv1.SubjectAccessReviewStatus{
+						Allowed: !tc.allowed, Denied: tc.allowed, Reason: "client-supplied status",
+					},
+				}, metav1.CreateOptions{})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if result.Status.Allowed != tc.allowed || result.Status.Denied ||
+					result.Status.EvaluationError != "" || result.Status.Reason == "client-supplied status" {
+					t.Errorf("review status = %+v, want allowed=%t from the request policy", result.Status, tc.allowed)
+				}
+			})
+		}
+	})
+
+	t.Run("rejects malformed self access reviews", func(t *testing.T) {
+		for _, tc := range []struct {
+			name   string
+			review authorizationv1.SelfSubjectAccessReview
+		}{
+			{"missing attributes", authorizationv1.SelfSubjectAccessReview{}},
+			{"object metadata", authorizationv1.SelfSubjectAccessReview{
+				ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"demo": "true"}},
+				Spec: authorizationv1.SelfSubjectAccessReviewSpec{
+					NonResourceAttributes: &authorizationv1.NonResourceAttributes{Verb: "get", Path: "/version"},
+				},
+			}},
+			{"conflicting selector encodings", authorizationv1.SelfSubjectAccessReview{
+				Spec: authorizationv1.SelfSubjectAccessReviewSpec{
+					ResourceAttributes: &authorizationv1.ResourceAttributes{
+						Group: api.GroupName, Resource: api.ResourceName, Verb: "list",
+						LabelSelector: &authorizationv1.LabelSelectorAttributes{
+							RawSelector: "demo",
+							Requirements: []metav1.LabelSelectorRequirement{
+								{Key: "demo", Operator: metav1.LabelSelectorOpExists},
+							},
+						},
+					},
+				},
+			}},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				if _, err := reviews.Create(ctx, &tc.review, metav1.CreateOptions{}); !apierrors.IsInvalid(err) {
+					t.Errorf("expected invalid self access review, got %v", err)
+				}
+			})
+		}
+	})
+
 	devices := client.GenericV1alpha1().BLEDevices(api.LocalNamespace)
 	device := observed.Items[0]
 	t.Run("reads observations in local", func(t *testing.T) {
@@ -194,7 +302,9 @@ func TestReplayControlPlane(t *testing.T) {
 		}{
 			{"kubectl forbidden to create", http.MethodPost, resourcePath, config, http.StatusForbidden},
 			{"kubectl forbidden to create namespaces", http.MethodPost, "/api/v1/namespaces", config, http.StatusForbidden},
+			{"kubectl forbidden to review another user", http.MethodPost, "/apis/" + authorizationGV + "/subjectaccessreviews", config, http.StatusForbidden},
 			{"API requires credentials", http.MethodGet, resourcePath, rest.AnonymousClientConfig(config), http.StatusUnauthorized},
+			{"self access reviews require credentials", http.MethodPost, reviewPath, rest.AnonymousClientConfig(config), http.StatusUnauthorized},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
 				httpClient, err := rest.HTTPClientFor(tc.config)

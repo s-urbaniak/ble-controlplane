@@ -9,6 +9,7 @@ import (
 	"net"
 	"time"
 
+	authorizationv1 "k8s.io/api/authorization/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -29,6 +30,7 @@ import (
 	"example.com/ble-controlplane/pkg/apis/generic/install"
 	"example.com/ble-controlplane/pkg/apis/generic/v1alpha1"
 	generated "example.com/ble-controlplane/pkg/generated/openapi"
+	authorizationopenapi "example.com/ble-controlplane/pkg/generated/openapi/authorization"
 	namespaceopenapi "example.com/ble-controlplane/pkg/generated/openapi/namespace"
 )
 
@@ -45,6 +47,10 @@ func init() {
 	namespaces := []runtime.Object{&corev1.Namespace{}, &corev1.NamespaceList{}}
 	scheme.AddKnownTypes(corev1.SchemeGroupVersion, namespaces...)
 	scheme.AddKnownTypes(schema.GroupVersion{Version: runtime.APIVersionInternal}, namespaces...)
+	// Ephemeral access reviews use the same type for internal and wire requests.
+	scheme.AddKnownTypes(authorizationv1.SchemeGroupVersion, &authorizationv1.SelfSubjectAccessReview{})
+	metav1.AddToGroupVersion(scheme, authorizationv1.SchemeGroupVersion)
+	scheme.AddKnownTypes(schema.GroupVersion{Group: authorizationv1.GroupName, Version: runtime.APIVersionInternal}, &authorizationv1.SelfSubjectAccessReview{})
 	utilruntime.Must(scheme.SetVersionPriority(corev1.SchemeGroupVersion))
 	utilruntime.Must(scheme.AddFieldLabelConversionFunc(corev1.SchemeGroupVersion.WithKind("Namespace"), func(label, value string) (string, string, error) {
 		switch label {
@@ -69,6 +75,7 @@ func NewConfig(listener net.Listener, pki credentials.Files, index *ble.Index) (
 	c.ShutdownWatchTerminationGracePeriod = 2 * time.Second
 	c.MergedResourceConfig = serverstorage.NewResourceConfig()
 	c.MergedResourceConfig.EnableVersions(bleResource.GroupVersion(), namespaceResource.GroupVersion())
+	c.MergedResourceConfig.EnableResources(selfReviewResource)
 	namer := openapi.NewDefinitionNamer(scheme)
 	c.OpenAPIConfig = server.DefaultOpenAPIConfig(openAPIDefinitions, namer)
 	c.OpenAPIV3Config = server.DefaultOpenAPIV3Config(openAPIDefinitions, namer)
@@ -108,8 +115,11 @@ var bleResource = schema.GroupVersion(v1alpha1.GroupVersion).WithResource(api.Re
 
 var namespaceResource = corev1.SchemeGroupVersion.WithResource("namespaces")
 
+var selfReviewResource = authorizationv1.SchemeGroupVersion.WithResource("selfsubjectaccessreviews")
+
 func openAPIDefinitions(ref openapicommon.ReferenceCallback) map[string]openapicommon.OpenAPIDefinition {
 	definitions := generated.GetOpenAPIDefinitions(ref)
 	maps.Copy(definitions, namespaceopenapi.GetOpenAPIDefinitions(ref))
+	maps.Copy(definitions, authorizationopenapi.GetOpenAPIDefinitions(ref))
 	return definitions
 }
