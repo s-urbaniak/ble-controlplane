@@ -4,6 +4,8 @@ A small Kubernetes-style control plane for the Bluetooth Low Energy advertisemen
 seen by this machine. It serves the native `BLEDevice` resource in the fixed
 `local` namespace and embeds a read-only dashboard.
 
+![BLE Control Plane dashboard and K9s showing nearby Bluetooth devices](docs/ble-control-plane.png)
+
 ## Run the replay demo
 
 Install GNU Make, Go 1.26.5 or newer, and Node.js 24 or newer with npm. On macOS,
